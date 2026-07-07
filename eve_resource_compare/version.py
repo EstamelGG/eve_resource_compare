@@ -39,3 +39,13 @@ def resolve_manifest_version(server_version: int) -> int:
         if head_ok(manifest_url(v)):
             return v
     raise RuntimeError(f"No manifest found for server_version {server_version}")
+
+
+def find_previous_manifest_version(new_version: int) -> int | None:
+    """Highest manifest build below new_version, from known candidates."""
+    candidates = [v for v in config.MANIFEST_FALLBACK_VERSIONS if v < new_version]
+    candidates.sort(reverse=True)
+    for v in candidates:
+        if head_ok(manifest_url(v)):
+            return v
+    return None

@@ -147,7 +147,9 @@ class GitHubReleases:
         rel = self.create_release(
             tag,
             f"EVE snapshot {version}",
-            f"Index snapshot for client build {version}",
+            f"Index snapshot for client build {version}.\n\n"
+            f"Contains gzipped index data. For HTML diff report see the "
+            f"`compare-{{old}}-{version}` release.",
         )
         for asset in assets:
             self.upload_asset(rel["id"], asset, "application/gzip")

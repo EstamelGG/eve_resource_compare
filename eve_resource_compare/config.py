@@ -22,6 +22,3 @@ DEPS_MANIFEST_PATH = "app:/resfiledependencies.yaml"
 SOF_ROOT = "res:/dx9/model/spaceobjectfactory"
 SOF_DATA_BLACK = f"{SOF_ROOT}/data.black"
 SOF_GENERIC_BLACK = f"{SOF_ROOT}/generic.black"
-
-SDE_CACHE_DIR = ".cache/sde"
-SDE_FILES = ("types.jsonl", "graphics.jsonl")

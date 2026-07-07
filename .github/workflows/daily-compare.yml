@@ -36,24 +36,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore SDE cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/sde
-          key: sde-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            sde-${{ runner.os }}-
-
       - name: Run comparison pipeline
+        uses: nick-fields/retry@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SDE_CACHE_DIR: .cache/sde
-        run: |
-          ARGS=""
-          if [ -n "${{ inputs.base_version }}" ]; then
-            ARGS="$ARGS --base-version ${{ inputs.base_version }}"
-          fi
-          if [ "${{ inputs.force_compare }}" = "true" ]; then
-            ARGS="$ARGS --force-compare"
-          fi
-          python -m eve_resource_compare $ARGS
+          CDN_TIMEOUT: "300"
+          CDN_LARGE_TIMEOUT: "600"
+          CDN_RETRIES: "5"
+        with:
+          timeout_minutes: 80
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: |
+            ARGS=""
+            if [ -n "${{ inputs.base_version }}" ]; then
+              ARGS="$ARGS --base-version ${{ inputs.base_version }}"
+            fi
+            if [ "${{ inputs.force_compare }}" = "true" ]; then
+              ARGS="$ARGS --force-compare"
+            fi
+            python -m eve_resource_compare $ARGS

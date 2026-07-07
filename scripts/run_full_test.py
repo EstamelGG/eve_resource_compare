@@ -10,7 +10,7 @@ from pathlib import Path
 from eve_resource_compare.compare import compare_indices
 from eve_resource_compare.html_report import write_diff_html
 from eve_resource_compare.indices_fetcher import fetch_version_indices
-from eve_resource_compare.sde_loader import load_graphics, load_types, set_cache_dir
+from eve_resource_compare.sde_loader import load_graphics, load_types
 from eve_resource_compare.type_deps import (
     build_type_dependencies,
     invert_path_to_types,
@@ -23,7 +23,6 @@ OUT_DIR = Path(".cache/test-output")
 
 
 def main() -> int:
-    set_cache_dir(".cache/sde")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
@@ -42,8 +41,8 @@ def main() -> int:
 
     print("=== 3/6 Load SDE ===")
     t = time.time()
-    types = load_types(sde_build)
-    graphics = load_graphics(sde_build)
+    types = load_types()
+    graphics = load_graphics()
     print(f"types={len(types)} graphics={len(graphics)} ({time.time()-t:.1f}s)")
 
     print("=== 4/6 Build type dependencies ===")
@@ -69,7 +68,7 @@ def main() -> int:
 
     print(f"=== 5/6 Fetch old indices ({OLD_VERSION}) ===")
     t = time.time()
-    old_idx = fetch_version_indices(OLD_VERSION)
+    old_idx = fetch_version_indices(OLD_VERSION, include_dependencies=False)
     print(f"app={len(old_idx.app_index)} res={len(old_idx.res_index)} ({time.time()-t:.1f}s)")
 
     print("=== 6/6 Compare ===")

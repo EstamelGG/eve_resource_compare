@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import yaml
 
 from . import config
-from .cdn import fetch_text
+from .cdn import CDN_LARGE_TIMEOUT, fetch_text
 from .index_parser import IndexEntry, build_index_map, parse_index_text
 
 
@@ -40,25 +40,34 @@ def _merge_res_index(target: dict[str, dict], text: str) -> None:
             target[entry.path] = {"hash": entry.hash, "size": entry.size}
 
 
-def fetch_version_indices(version: int) -> VersionIndices:
+def _download_res_indexes(manifest_entries: dict[str, IndexEntry]) -> dict[str, dict]:
+    res_index: dict[str, dict] = {}
+    for name in config.RESFILEINDEX_NAMES:
+        entry = manifest_entries.get(name)
+        if entry:
+            print(f"Downloading {name}...")
+            text = fetch_text(storage_url(entry.storage), timeout=CDN_LARGE_TIMEOUT)
+            _merge_res_index(res_index, text)
+    return res_index
+
+
+def fetch_version_indices(version: int, *, include_dependencies: bool = True) -> VersionIndices:
+    print(f"Fetching indices for version {version} from CDN...")
     _, manifest_entries = fetch_manifest(version)
 
     app_index = build_index_map(
         (e for e in manifest_entries.values()),
         prefix="app:/",
     )
+    res_index = _download_res_indexes(manifest_entries)
 
-    res_index: dict[str, dict] = {}
-    for name in config.RESFILEINDEX_NAMES:
-        entry = manifest_entries.get(name)
-        if entry:
-            text = fetch_text(storage_url(entry.storage))
-            _merge_res_index(res_index, text)
-
-    deps_entry = manifest_entries.get(config.DEPS_MANIFEST_PATH)
-    if not deps_entry:
-        raise RuntimeError(f"{config.DEPS_MANIFEST_PATH} not found in manifest {version}")
-    dependencies_yaml = fetch_text(storage_url(deps_entry.storage))
+    dependencies_yaml = ""
+    if include_dependencies:
+        deps_entry = manifest_entries.get(config.DEPS_MANIFEST_PATH)
+        if not deps_entry:
+            raise RuntimeError(f"{config.DEPS_MANIFEST_PATH} not found in manifest {version}")
+        print(f"Downloading {config.DEPS_MANIFEST_PATH}...")
+        dependencies_yaml = fetch_text(storage_url(deps_entry.storage), timeout=CDN_LARGE_TIMEOUT)
 
     return VersionIndices(
         version=version,

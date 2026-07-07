@@ -9,9 +9,9 @@ from pathlib import Path
 from .compare import compare_indices
 from .indices_fetcher import fetch_version_indices
 from .release import GitHubReleases
-from .sde_loader import load_graphics, load_types, set_cache_dir
+from .sde_loader import load_graphics, load_types
 from .type_deps import build_type_dependencies, invert_path_to_types, type_deps_to_json
-from .version import resolve_manifest_version, sde_is_ready
+from .version import find_previous_manifest_version, resolve_manifest_version, sde_is_ready
 
 
 def _parse_args() -> argparse.Namespace:
@@ -19,12 +19,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--base-version", type=int, default=None, help="Manual baseline build number")
     p.add_argument("--github-token", default=None, help="GitHub token for releases")
     p.add_argument("--workdir", type=Path, default=None, help="Temp directory for assets")
-    p.add_argument(
-        "--sde-cache-dir",
-        type=Path,
-        default=None,
-        help="Local directory for SDE zip and extracted jsonl (default: .cache/sde)",
-    )
     p.add_argument(
         "--force-compare",
         action="store_true",
@@ -35,8 +29,6 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    if args.sde_cache_dir:
-        set_cache_dir(args.sde_cache_dir)
 
     token = args.github_token or __import__("os").environ.get("GITHUB_TOKEN")
     if not token:
@@ -63,11 +55,18 @@ def main() -> int:
         base_source = "latest_release"
 
     if old_version is None:
-        print("First run: no previous snapshot release, creating baseline only")
-    elif old_version == new_version and not args.force_compare and args.base_version is None:
+        prev = find_previous_manifest_version(new_version)
+        if prev is not None:
+            old_version = prev
+            base_source = "auto_previous_manifest"
+            print(f"No snapshot release; auto compare against previous manifest {old_version}")
+        else:
+            print("First run: no previous manifest, creating baseline snapshot only")
+
+    if old_version == new_version and not args.force_compare and args.base_version is None:
         print(f"SKIP: already processed version {new_version}")
         return 0
-    elif (
+    if (
         old_version is not None
         and old_version != new_version
         and gh.compare_release_exists(old_version, new_version)
@@ -77,8 +76,13 @@ def main() -> int:
         return 0
 
     print("Loading SDE types and graphics...")
-    types = load_types(sde_build)
-    graphics = load_graphics(sde_build)
+    types = load_types()
+    graphics = load_graphics()
+
+    old_indices = None
+    if old_version is not None and old_version != new_version:
+        print(f"Fetching indices for old version {old_version}...")
+        old_indices = fetch_version_indices(old_version, include_dependencies=False)
 
     print(f"Fetching indices for new version {new_version}...")
     new_indices = fetch_version_indices(new_version)
@@ -116,9 +120,6 @@ def main() -> int:
     if old_version == new_version:
         print("Old and new version identical; skipping compare and snapshot")
         return 0
-
-    print(f"Fetching indices for old version {old_version}...")
-    old_indices = fetch_version_indices(old_version)
 
     print(f"Comparing {old_version} → {new_version}...")
     diff = compare_indices(
