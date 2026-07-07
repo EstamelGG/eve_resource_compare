@@ -1,0 +1,69 @@
+---
+description: EVE Online CDN 在线资源下载与索引格式
+alwaysApply: false
+---
+
+# EVE CDN 资源解析
+
+从 CCP 官方 CDN 下载 manifest、resfileindex 及游戏资源。完整 typeID 依赖链见 `eve-resource-pipeline.mdc`；本地磁盘副本见 `eve-local-resolve.mdc`。
+
+## CDN 解析链
+
+```
+ESI server_version
+  → binaries.eveonline.com/eveonline_{version}.txt   (manifest)
+  → app:/resfileindex.txt 等条目
+  → binaries.eveonline.com/{storage}
+  → resfileindex 内 res:/... 条目
+  → resources.eveonline.com/{storage}
+```
+
+## 1. 获取版本号
+
+- ESI: `https://esi.evetech.net/latest/status/?datasource=tranquility` → `server_version`
+- **注意**：ESI 的 `server_version` 不一定等于 manifest 文件名；403/404 时回退已知版本：
+  `3424810, 3421648, 3419624, 3417089, 3409592, 3407448, 3405148, 3383521`
+
+## 2. Manifest
+
+- URL: `https://binaries.eveonline.com/eveonline_{version}.txt`
+- 必须带 `User-Agent` 请求头，否则 403
+- 关键条目：
+  - `app:/resfileindex.txt`
+  - `app:/resfiledependencies.yaml`
+  - （另有 `resfileindex_Windows.txt`、`resfileindex_prefetch.txt`）
+
+## 3. 索引行格式（manifest 与 resfileindex 通用）
+
+```text
+逻辑路径,storage路径,hash,原始大小,压缩大小,flags
+```
+
+示例：
+
+```text
+app:/resfileindex.txt,1d/1d34143a37d4b739_293ce91d9fbd9a2c07a1e759bbe1c5c0,293ce91d9fbd9a2c07a1e759bbe1c5c0,20548573,5240939,33188
+app:/resfiledependencies.yaml,ee/eea80354bae9a691_f41a46144bcd26b4713fd43accdc11fd,f41a46144bcd26b4713fd43accdc11fd,12975957,813592,33188
+res:/staticdata/wrecks.static,53/53a765e9b99332c8_a5dc07f2475f7834ea4ff447e93d1038,a5dc07f2475f7834ea4ff447e93d1038,15756,2876
+```
+
+| 前缀 | 下载域名 |
+|------|----------|
+| `app:/`（manifest 内） | `https://binaries.eveonline.com/{storage}` |
+| `res:/`（resfileindex 内） | `https://resources.eveonline.com/{storage}` |
+
+## 4. res 路径 → URL
+
+```text
+1. 在 resfileindex 中匹配首列（小写，可带或不带 res:/ 前缀）
+2. 取第 2 列 storage
+3. https://resources.eveonline.com/{storage}
+```
+
+路径规范化：`\` → `/`，trim，小写；去掉 `res:/` 后用于相对匹配。查找时同时尝试 `path` 与 `res:/{path}`。
+
+## 5. 约定
+
+- 所有 CDN 请求需带 `User-Agent`
+- resfileindex 约 20MB，应缓存解析结果
+- `binaries` 与 `resources` 域名不可混用

@@ -1,0 +1,321 @@
+---
+description: EVE 资源解析方法论（数据源、下载、索引、typeID 依赖、文件内容解析）
+alwaysApply: false
+---
+
+# EVE 资源解析方法论
+
+文件从哪来、如何下载、如何索引、如何从 typeID 和文件内容推导出所需资源。
+
+## 一、数据源总览
+
+| 数据 | 作用 | 获取方式 |
+|------|------|----------|
+| **SDE** | typeID → SOF 名称 | [developers.eveonline.com](https://developers.eveonline.com/) 独立下载；使用前需与 ESI 版本比对 |
+| **manifest** | 列出客户端文件及 storage 哈希 | `binaries.eveonline.com` |
+| **resfileindex** | `res:/path` → storage 哈希 | manifest 条目 → binaries CDN |
+| **resfiledependencies.yaml** | 每个 `.red` 的直接依赖列表 | manifest 条目 → binaries CDN |
+| **游戏资源文件** | `.gr2` `.dds` `.black` 等 | resfileindex 条目 → resources CDN |
+| **SharedCache**（可选） | 上述 index/资源的本地下载副本 | EVE 客户端安装目录 |
+
+---
+
+## 二、在线下载链
+
+### 2.1 版本号
+
+```
+GET https://esi.evetech.net/latest/status/?datasource=tranquility
+→ server_version（如 3424810）
+```
+
+**注意**：`server_version` 不一定等于 manifest 文件名；403/404 时尝试已知版本：
+`3424810, 3421648, 3419624, 3417089, 3409592, 3407448, 3405148, 3383521`
+
+### 2.2 Manifest
+
+```
+GET https://binaries.eveonline.com/eveonline_{version}.txt
+Header: User-Agent（必填，否则 403）
+```
+
+每行 CSV：
+
+```text
+逻辑路径,storage路径,hash,原始大小,压缩大小,flags
+```
+
+示例：
+
+```text
+app:/resfileindex.txt,1d/1d34143a37d4b739_...,293ce91...,20548573,5240939,33188
+app:/resfiledependencies.yaml,ee/eea80354...,f41a4614...,12975957,813592,33188
+```
+
+- `app:/` 前缀 → 从 **binaries.eveonline.com/{storage}** 下载
+- `res:/` 前缀（出现在 resfileindex 内）→ 从 **resources.eveonline.com/{storage}** 下载
+
+### 2.3 下载 resfileindex 与 dependencies
+
+在 manifest 中查找：
+
+```text
+app:/resfileindex.txt
+app:/resfiledependencies.yaml
+```
+
+下载 URL：
+
+```text
+https://binaries.eveonline.com/{storage}
+```
+
+resfileindex 约 20MB 文本，每行映射一个游戏资源：
+
+```text
+res:/dx9/model/ship/.../cb2_t1.gr2,ab/ab1234..._hash,hash,原始大小,压缩大小
+res:/staticdata/wrecks.static,53/53a765e9...,hash,15756,2876
+```
+
+任意 `res:/...` 路径的下载 URL：
+
+```text
+https://resources.eveonline.com/{该行第2列 storage}
+```
+
+### 2.4 SDE（独立来源）
+
+SDE **不在** manifest 内，需单独获取：
+
+- 下载页：[EVE Developers SDE](https://developers.eveonline.com/) 或社区镜像（如 Fuzzwork）
+- 所需文件：`types.jsonl`、`graphics.jsonl`（可选 `groups.jsonl`）
+- 格式：每行 JSON，`_key` 为主键
+
+#### SDE 版本校验（使用前必做）
+
+```
+GET https://developers.eveonline.com/static-data/tranquility/latest.jsonl
+→ buildNumber（如 3424810）
+
+GET https://esi.evetech.net/latest/status/?datasource=tranquility
+→ server_version（如 3424810）
+```
+
+**仅当 `buildNumber` == `server_version` 时**，说明 SDE 已随当前服务器版本更新，方可用于 typeID → SOF 解析。
+
+```json
+{"_key": "sde", "buildNumber": 3424810, "releaseDate": "2026-07-07T11:05:37Z"}
+```
+
+版本不一致时：SDE 可能滞后于客户端资源，查到的 `graphicID` / SOF 名称可能与 resfileindex 不匹配，应等待 SDE 更新或换用匹配版本的 SDE 包。
+
+---
+
+## 三、res 路径 → 文件 URL（通用算法）
+
+```text
+输入: res:/dx9/model/foo/bar.dds
+
+1. 在 resfileindex 中找首列匹配行（小写，可带或不带 res:/ 前缀）
+2. 取第 2 列 storage，如 53/53a765e9b99332c8_...
+3. URL = https://resources.eveonline.com/{storage}
+```
+
+路径规范化：`\` → `/`，去首尾空白，小写，去掉 `res:/` 前缀用于相对匹配。
+
+---
+
+## 四、typeID → 所需资源清单
+
+**前置条件**：SDE 的 `buildNumber` 与 ESI `server_version` 一致（见 2.4 节）。
+
+纯数据推导：
+
+```mermaid
+flowchart TD
+  T[typeID] --> SDE1[types.jsonl]
+  SDE1 --> G[graphicID]
+  G --> SDE2[graphics.jsonl]
+  SDE2 --> SOF[sofHullName / sofFactionName / sofRaceName]
+  SOF --> ENTRY[SOF 入口 .black + .red]
+  ENTRY --> DEPS[resfiledependencies.yaml]
+  DEPS --> LIST[直接依赖列表]
+  LIST --> GR2[其中的 .gr2 路径]
+  GR2 --> DIR[resfileindex 同目录扫描]
+  DIR --> ALL[合并去重 = 完整资源集]
+```
+
+### 4.1 SDE 查 SOF
+
+```text
+types.jsonl     → 找 _key == typeID     → graphicID
+graphics.jsonl  → 找 _key == graphicID  → 字段：
+  sofHullName      如 cb2_t1
+  sofFactionName   如 caldaribase
+  sofRaceName      如 caldari
+
+DNA = "{hull}:{faction}:{race}"  （全小写）
+```
+
+无 `sofHullName` → 该 type 不走 SOF 舰船管线。
+
+**示例 typeID 640**：Scorpion，`cb2_t1:caldaribase:caldari`
+
+### 4.2 SOF 入口文件（固定路径模板）
+
+| 角色 | res 路径 |
+|------|----------|
+| SOF 根 | `res:/dx9/model/spaceobjectfactory/data.black` |
+| SOF 根 | `res:/dx9/model/spaceobjectfactory/generic.black` |
+| Hull | `res:/dx9/model/spaceobjectfactory/hulls/{hull}.black` |
+| Hull 依赖根 | `res:/dx9/model/spaceobjectfactory/hulls/{hull}.red` |
+| Faction | `res:/dx9/model/spaceobjectfactory/factions/{faction}.black` |
+| Faction 依赖根 | `res:/dx9/model/spaceobjectfactory/factions/{faction}.red` |
+| Race | `res:/dx9/model/spaceobjectfactory/races/{race}.black` |
+| Race 依赖根 | `res:/dx9/model/spaceobjectfactory/races/{race}.red` |
+
+以上路径均通过 resfileindex → resources CDN 下载。
+
+### 4.3 resfiledependencies.yaml 展开
+
+YAML 结构：**键** = 某个 `.red` 的 res 路径，**值** = 该 `.red` 直接依赖的 res 路径数组（一层，不递归）。
+
+```yaml
+res:/dx9/model/spaceobjectfactory/hulls/cb2_t1.red:
+  - res:/dx9/model/ship/caldari/battleship/cb2/cb2_t1.gr2
+  - res:/dx9/model/ship/caldari/battleship/cb2/cb2_t1_a.dds
+  - res:/dx9/model/decal/...
+  - ...
+```
+
+对 hull / faction / race 三个 `.red` 键各查一次，合并结果。
+
+640 实测：`cb2_t1.red` 约 178 条；faction/race 各约 15 条。
+
+### 4.4 GR2 同目录补全
+
+dependencies 常漏掉同目录贴图；resfileindex 含**全部** res 路径 listing。
+
+```text
+1. 从 hull 依赖中提取 .gr2 路径
+2. 取目录，如 dx9/model/ship/caldari/battleship/cb2/
+3. 在 resfileindex 所有行中筛选：路径等于该目录或以该目录/ 开头
+4. 合并进资源集
+```
+
+640 实测：此步额外约 70 个文件。
+
+### 4.5 过滤（可选）
+
+渲染常用过滤：
+
+- **保留**扩展名：`.gr2` `.dds` `.black` `.red` `.fx` `.sm_hi` `.sm_lo`
+- **排除**文件名含 `_lowdetail`、`_mediumdetail`
+
+640 过滤后合计约 **278** 个 res 路径。
+
+---
+
+## 五、从文件内容找更多资源
+
+索引和 dependencies 给出「该下哪些文件」；**文件内容**决定「怎么用、还缺什么」。
+
+### 5.1 `hulls/{hull}.black`（EveSOFDataHull）
+
+- 格式：Carbon `.black` 二进制
+- 根类型是 `EveSOFDataHull`（不是嵌套在 `EveSOFData.hull[]` 里）
+- **推荐**：用 `format-black` 的 `inspect()` 读字符串表，不必全量 schema parse
+
+从 strings 中提取：
+
+| 字符串模式 | 含义 |
+|------------|------|
+| `res:/.../{hull}.gr2` | **geometryResFilePath** — 主网格 |
+| `res:/.../*.dds` + 下一项 `AlbedoMap` | 漫反射贴图 |
+| 同上 + `NormalMap` / `RoughnessMap` / `MaterialMap` / `GlowMap` / `DirtMap` / `PaintMaskMap` | PBR 贴图 |
+
+640 贴图示例（均在 hull.black strings 中）：
+
+```text
+cb2_t1_a.dds   → AlbedoMap
+cb2_t1_n.dds   → NormalMap
+cb2_t1_r.dds   → RoughnessMap
+cb2_t1_m.dds   → MaterialMap
+cb2_t1_g.dds   → GlowMap
+cb2_t1_d.dds   → DirtMap
+cb2_t1_p3.dds  → PaintMaskMap
+```
+
+### 5.2 `{hull}.gr2`
+
+- 格式：Granny GR2（`format-gr2`）
+- 内容：顶点、法线、UV、子 mesh、索引
+- **不含**贴图像素；贴图路径来自 `.black`
+
+### 5.3 `.red` 文件
+
+- SOF 材质/着色器组合定义
+- 在 **resfiledependencies.yaml** 中作为键，其值列出运行时需要的贴图、特效 `.red`、decal 等
+- 本身也通过 resfileindex 下载
+
+### 5.4 `factions/{faction}.black` / `races/{race}.black`
+
+- 派系/种族配色、涂装规则
+- 完整还原游戏外观需解析；简化查看器可用 faction 名映射预设色
+
+### 5.5 DDS 贴图格式（EVE 常见）
+
+| 文件后缀 | FourCC | 格式 |
+|----------|--------|------|
+| `*_a.dds` 等 | DX10 | BC7（Albedo 等） |
+| `*_n.dds` | ATI2 | BC5 法线 |
+| `*_r/m/d/g/p3.dds` | ATI1 | BC4 单通道 |
+
+---
+
+## 六、最小渲染链 vs 完整资源集
+
+| | 完整清单（第四节） | 最小在线查看 |
+|--|-------------------|--------------|
+| 文件数 | ~278（640） | ~10 |
+| SDE | 需要 | 需要 |
+| dependencies.yaml | 需要 | 不需要 |
+| resfileindex 全量 listing | 需要 | 只需能下单个文件 |
+| hull.black | 需要 | 需要（几何+贴图路径） |
+| faction/race .red 依赖 | 需要 | 不需要 |
+| decal/特效/皮肤 | 需要 | 不需要 |
+
+最小链：
+
+```text
+SDE → sofHullName
+  → 下载 hulls/{hull}.black
+  → inspect: geometryResFilePath + 贴图 maps
+  → 下载 .gr2 + .dds
+  → 解析渲染
+```
+
+---
+
+## 七、本地 SharedCache（离线下载替代）
+
+已安装 EVE 客户端时，CDN 文件的本地副本：
+
+```text
+{SharedCache}/tq/resfileindex.txt
+{SharedCache}/tq/resfiledependencies.yaml
+{SharedCache}/ResFiles/{storage}     ← 主存储
+{SharedCache}/tq/res/{storage}       ← 备选
+```
+
+逻辑与线上一致：index 查 storage，再读磁盘文件。详见 `eve-local-resolve.mdc`。
+
+---
+
+## 八、相关 rule 索引
+
+| rule | 内容 |
+|------|------|
+| `eve-cdn-resolve.mdc` | CDN 域名、manifest、索引行格式 |
+| `eve-local-resolve.mdc` | SharedCache 目录与磁盘查找 |
+| 本文 | typeID 依赖推导 + 文件内容解析 |

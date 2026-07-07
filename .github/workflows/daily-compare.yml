@@ -1,0 +1,59 @@
+name: EVE Resource Compare
+
+on:
+  schedule:
+    # 北京时间 19:10 / 19:30 / 20:00 = UTC 11:10 / 11:30 / 12:00
+    - cron: "10 11 * * *"
+    - cron: "30 11 * * *"
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      base_version:
+        description: "Manual baseline build number (optional)"
+        required: false
+        type: string
+      force_compare:
+        description: "Compare even when versions match"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore SDE cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/sde
+          key: sde-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            sde-${{ runner.os }}-
+
+      - name: Run comparison pipeline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SDE_CACHE_DIR: .cache/sde
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.base_version }}" ]; then
+            ARGS="$ARGS --base-version ${{ inputs.base_version }}"
+          fi
+          if [ "${{ inputs.force_compare }}" = "true" ]; then
+            ARGS="$ARGS --force-compare"
+          fi
+          python -m eve_resource_compare $ARGS

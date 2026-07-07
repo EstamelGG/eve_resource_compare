@@ -1,0 +1,79 @@
+---
+description: EVE Online 本地 SharedCache 目录结构与磁盘查找
+alwaysApply: false
+---
+
+# EVE 本地 SharedCache
+
+EVE 客户端安装后的本地资源副本，**不访问 CDN**。在线下载链见 `eve-cdn-resolve.mdc`；typeID 依赖推导见 `eve-resource-pipeline.mdc`。
+
+## 解析链
+
+```
+SharedCache/tq/resfileindex.txt
+  → res:/... → storage 哈希路径
+  → ResFiles/{storage} 等候选路径
+  → 磁盘上的实际文件
+```
+
+## 目录结构
+
+```
+SharedCache/
+├── ResFiles/                    # 主存储：{storage}，如 53/53a765e9...
+├── tq/
+│   ├── resfileindex.txt         # res 路径 → storage 映射
+│   ├── resfileindex_Windows.txt # 可选补充索引
+│   ├── resfiledependencies.yaml # .red 依赖表
+│   └── res/                     # 部分资源的备选位置
+└── res/                         # 备选路径
+```
+
+`tq` 根目录即含 `resfileindex.txt` 的 `SharedCache/tq`（或等价路径）。
+
+## resfileindex 格式
+
+每行 CSV，只处理 `res:/` 前缀：
+
+```text
+res:/dx9/model/ship/.../cb2_t1.gr2,ab/ab1234..._hash,hash,原始大小,压缩大小
+```
+
+查找键（均小写）：`res:/path`、`path`、`cdn:/path`、`cdn:path`。可同时加载 `resfileindex_Windows.txt` 合并条目。
+
+## 路径别名
+
+索引未命中时可尝试替换：
+
+- `graphics/effect.gles2/` ↔ `graphics/effect.dx11/`
+- `graphics/effect.gles2.mali` ↔ `graphics/effect.dx11/`
+
+`.gr2_json` 可回退到同名 `.gr2`。
+
+## 磁盘候选路径（按顺序）
+
+给定 `storage` 与 `res_rel`（去掉 `res:/` 的路径），依次检查：
+
+```text
+SharedCache/ResFiles/{storage}
+SharedCache/ResFiles/{res_rel}
+{tq}/res/{storage}
+SharedCache/tq/res/{storage}
+SharedCache/res/{storage}
+{tq}/{storage}
+{tq}/res/{res_rel}
+{tq}/{res_rel}
+SharedCache/tq/res/{res_rel}
+SharedCache/res/{res_rel}
+```
+
+首个存在的文件即为解析结果。未在 index 中出现 → 未索引；index 有但磁盘无 → 缺失。
+
+## resfiledependencies.yaml
+
+位于 `SharedCache/tq/resfiledependencies.yaml`，也可从 manifest 的 `app:/resfiledependencies.yaml` 条目经 binaries CDN 下载。用法见 `eve-resource-pipeline.mdc` 第四节。
+
+## 约定
+
+- 本地查找只读磁盘，不请求 CDN
+- index 逻辑与线上一致：先查 storage，再按候选路径找文件
