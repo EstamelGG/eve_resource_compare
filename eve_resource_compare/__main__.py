@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .compare import compare_indices
 from .indices_fetcher import fetch_version_indices
 from .release import GitHubReleases
 from .sde_loader import load_graphics, load_types
-from .type_deps import build_type_dependencies, invert_path_to_types, type_deps_to_json
+from .type_deps import build_type_dependencies, invert_path_to_types
 from .version import find_previous_manifest_version, resolve_manifest_version, sde_is_ready
 
 
@@ -22,9 +21,39 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--force-compare",
         action="store_true",
-        help="Compare even when old_version == new_version",
+        help="Compare even when compare release already exists or versions match",
     )
     return p.parse_args()
+
+
+def _resolve_old_version(
+    gh: GitHubReleases,
+    new_version: int,
+    base_version: int | None,
+    force: bool,
+) -> tuple[int | None, str | None]:
+    """Return (old_version, base_source) or (None, None) to skip."""
+    if base_version is not None:
+        return base_version, "manual"
+
+    last_new = gh.latest_compare_new_version()
+    prev_manifest = find_previous_manifest_version(new_version)
+
+    if last_new == new_version and not force:
+        if prev_manifest and not gh.compare_release_exists(prev_manifest, new_version):
+            print(f"Compare-{prev_manifest}-{new_version} missing; will backfill")
+            return prev_manifest, "auto_previous_manifest"
+        print(f"SKIP: already compared up to version {new_version}")
+        return None, None
+
+    if last_new is not None and last_new < new_version:
+        return last_new, "latest_compare"
+
+    if prev_manifest is not None:
+        return prev_manifest, "auto_previous_manifest"
+
+    print("SKIP: no previous manifest version to compare against")
+    return None, None
 
 
 def main() -> int:
@@ -47,29 +76,18 @@ def main() -> int:
     print(f"Server version: {server_version}, manifest version: {new_version}, SDE: {sde_build}")
 
     gh = GitHubReleases(token)
-    if args.base_version is not None:
-        old_version = args.base_version
-        base_source = "manual"
-    else:
-        old_version = gh.latest_snapshot_version()
-        base_source = "latest_release"
-
+    old_version, base_source = _resolve_old_version(
+        gh, new_version, args.base_version, args.force_compare
+    )
     if old_version is None:
-        prev = find_previous_manifest_version(new_version)
-        if prev is not None:
-            old_version = prev
-            base_source = "auto_previous_manifest"
-            print(f"No snapshot release; auto compare against previous manifest {old_version}")
-        else:
-            print("First run: no previous manifest, creating baseline snapshot only")
-
-    if old_version == new_version and not args.force_compare and args.base_version is None:
-        print(f"SKIP: already processed version {new_version}")
         return 0
+
+    if old_version == new_version and not args.force_compare:
+        print(f"SKIP: old and new version are both {new_version}")
+        return 0
+
     if (
-        old_version is not None
-        and old_version != new_version
-        and gh.compare_release_exists(old_version, new_version)
+        gh.compare_release_exists(old_version, new_version)
         and not args.force_compare
     ):
         print(f"SKIP: compare-{old_version}-{new_version} release already exists")
@@ -79,10 +97,8 @@ def main() -> int:
     types = load_types()
     graphics = load_graphics()
 
-    old_indices = None
-    if old_version is not None and old_version != new_version:
-        print(f"Fetching indices for old version {old_version}...")
-        old_indices = fetch_version_indices(old_version, include_dependencies=False)
+    print(f"Fetching indices for old version {old_version}...")
+    old_indices = fetch_version_indices(old_version, include_dependencies=False)
 
     print(f"Fetching indices for new version {new_version}...")
     new_indices = fetch_version_indices(new_version)
@@ -97,30 +113,6 @@ def main() -> int:
     path_to_types = invert_path_to_types(type_deps)
     print(f"SOF types with dependencies: {len(type_deps)}")
 
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="eve-compare-"))
-
-    if old_version is None:
-        meta = {
-            "version": new_version,
-            "sde_build": sde_build,
-            "server_version": server_version,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        gh.publish_snapshot(
-            new_version,
-            meta,
-            new_indices.app_index,
-            new_indices.res_index,
-            type_deps_to_json(type_deps),
-            workdir,
-        )
-        print(f"Published baseline snapshot v{new_version}")
-        return 0
-
-    if old_version == new_version:
-        print("Old and new version identical; skipping compare and snapshot")
-        return 0
-
     print(f"Comparing {old_version} → {new_version}...")
     diff = compare_indices(
         old_indices.app_index,
@@ -131,7 +123,7 @@ def main() -> int:
         old_version,
         new_version,
         sde_build,
-        base_source,
+        base_source or "unknown",
     )
     summary = diff["summary"]
     print(
@@ -139,24 +131,9 @@ def main() -> int:
         f"removed={summary['removed']}, affected_types={summary['affected_types']}"
     )
 
+    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="eve-compare-"))
     gh.publish_compare(old_version, new_version, diff, workdir)
     print(f"Published compare-{old_version}-{new_version} (diff.json + diff.html)")
-
-    meta = {
-        "version": new_version,
-        "sde_build": sde_build,
-        "server_version": server_version,
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    gh.publish_snapshot(
-        new_version,
-        meta,
-        new_indices.app_index,
-        new_indices.res_index,
-        type_deps_to_json(type_deps),
-        workdir,
-    )
-    print(f"Published snapshot v{new_version}")
     return 0
 
 
