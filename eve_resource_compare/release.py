@@ -113,15 +113,17 @@ class GitHubReleases:
         workdir.mkdir(parents=True, exist_ok=True)
         from .html_report import write_diff_html
 
-        json_path = workdir / "diff.json"
-        html_path = workdir / "diff.html"
+        json_name = f"diff_{old_version}_{new_version}.json"
+        html_name = f"diff_{old_version}_{new_version}.html"
+        json_path = workdir / json_name
+        html_path = workdir / html_name
         json_path.write_text(json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8")
         write_diff_html(diff, html_path, path_index)
         rel = self.create_release(
             tag,
             f"Compare {old_version} → {new_version}",
             f"Resource index diff between builds {old_version} and {new_version}.\n\n"
-            f"Assets: **diff.json** (raw data), **diff.html** (report page).",
+            f"Assets: **{json_name}** (raw data), **{html_name}** (report page).",
         )
         self.upload_asset(rel["id"], json_path, "application/json")
         self.upload_asset(rel["id"], html_path, "text/html")

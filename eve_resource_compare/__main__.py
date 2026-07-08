@@ -140,7 +140,7 @@ def main() -> int:
         new_indices.res_index,
     )
     gh.publish_compare(old_version, new_version, diff, workdir, path_index)
-    print(f"Published compare-{old_version}-{new_version} (diff.json + diff.html)")
+    print(f"Published compare-{old_version}-{new_version} (diff_{old_version}_{new_version}.json/html)")
     return 0
 
 

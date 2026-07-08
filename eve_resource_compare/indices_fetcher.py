@@ -6,7 +6,7 @@ import yaml
 
 from . import config
 from .cdn import CDN_LARGE_TIMEOUT, fetch_text
-from .index_parser import IndexEntry, build_index_map, parse_index_text
+from .index_parser import IndexEntry, build_index_map, entry_to_dict, parse_index_text
 
 
 @dataclass
@@ -37,7 +37,7 @@ def fetch_manifest(version: int) -> tuple[str, dict[str, IndexEntry]]:
 def _merge_res_index(target: dict[str, dict], text: str) -> None:
     for entry in parse_index_text(text):
         if entry.path.startswith("res:/"):
-            target[entry.path] = {"hash": entry.hash, "size": entry.size}
+            target[entry.path] = entry_to_dict(entry)
 
 
 def _download_res_indexes(manifest_entries: dict[str, IndexEntry]) -> dict[str, dict]:
