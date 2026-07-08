@@ -4,6 +4,8 @@ import html
 from pathlib import Path
 from typing import Any
 
+from .cdn_url import cdn_download_url, path_basename
+
 
 def _change_kind(entry: dict) -> str:
     old, new = entry.get("old"), entry.get("new")
@@ -22,7 +24,21 @@ def _fmt_entry(entry: dict | None) -> str:
     return f"{entry.get('hash', '')} · {size_s} B"
 
 
-def render_diff_html(diff: dict[str, Any]) -> str:
+def _download_btn(path: str, path_index: dict[str, dict] | None) -> str:
+    if not path_index:
+        return ""
+    info = path_index.get(path)
+    if not info or not info.get("storage"):
+        return ""
+    url = cdn_download_url(path, info["storage"])
+    filename = path_basename(path)
+    return (
+        f'<a class="btn-dl" href="{html.escape(url)}" '
+        f'download="{html.escape(filename)}" target="_blank" rel="noopener">下载</a>'
+    )
+
+
+def render_diff_html(diff: dict[str, Any], path_index: dict[str, dict] | None = None) -> str:
     meta = diff["meta"]
     summary = diff["summary"]
     changes: dict[str, dict] = diff["changes"]
@@ -62,11 +78,13 @@ def render_diff_html(diff: dict[str, Any]) -> str:
                     chips.append(f'<span class="chip">{html.escape(label)}</span>')
                 types_html = f'<div class="types">{"".join(chips)}</div>'
 
+            dl_btn = _download_btn(path, path_index)
             parts.append(f"""
 <details class="item item-{kind}"{open_attr}>
   <summary>
     <span class="badge badge-{kind}">{kind}</span>
     <code class="path">{html.escape(path)}</code>
+    {dl_btn}
   </summary>
   <div class="body">
     <div class="hash-row"><span class="label">旧</span><code>{html.escape(_fmt_entry(entry.get("old")))}</code></div>
@@ -187,6 +205,23 @@ def render_diff_html(diff: dict[str, Any]) -> str:
     font-size: .78rem;
     word-break: break-all;
     color: var(--text);
+    flex: 1;
+    min-width: 0;
+  }}
+  .btn-dl {{
+    flex-shrink: 0;
+    margin-left: auto;
+    font-size: .7rem;
+    padding: .15rem .45rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--accent);
+    text-decoration: none;
+    white-space: nowrap;
+  }}
+  .btn-dl:hover {{
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }}
   .body {{ padding: 0 .75rem .65rem 1rem; border-top: 1px solid var(--border); }}
   .hash-row {{ font-size: .75rem; margin-top: .4rem; }}
@@ -296,5 +331,9 @@ def render_diff_html(diff: dict[str, Any]) -> str:
 </html>"""
 
 
-def write_diff_html(diff: dict[str, Any], path: Path) -> None:
-    path.write_text(render_diff_html(diff), encoding="utf-8")
+def write_diff_html(
+    diff: dict[str, Any],
+    path: Path,
+    path_index: dict[str, dict] | None = None,
+) -> None:
+    path.write_text(render_diff_html(diff, path_index), encoding="utf-8")

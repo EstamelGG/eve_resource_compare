@@ -5,6 +5,7 @@ SDE_LATEST_URL = "https://developers.eveonline.com/static-data/tranquility/lates
 SDE_ZIP_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
 
 BINARIES_BASE = "https://binaries.eveonline.com"
+RESOURCES_BASE = "https://resources.eveonline.com"
 MANIFEST_TEMPLATE = f"{BINARIES_BASE}/eveonline_{{version}}.txt"
 
 # ESI server_version may not match manifest filename; fallback candidates.

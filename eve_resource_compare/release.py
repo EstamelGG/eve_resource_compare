@@ -98,7 +98,14 @@ class GitHubReleases:
             )
         resp.raise_for_status()
 
-    def publish_compare(self, old_version: int, new_version: int, diff: dict, workdir: Path) -> None:
+    def publish_compare(
+        self,
+        old_version: int,
+        new_version: int,
+        diff: dict,
+        workdir: Path,
+        path_index: dict[str, dict] | None = None,
+    ) -> None:
         tag = f"compare-{old_version}-{new_version}"
         if self.release_exists(tag):
             print(f"Compare release {tag} already exists, skipping")
@@ -109,7 +116,7 @@ class GitHubReleases:
         json_path = workdir / "diff.json"
         html_path = workdir / "diff.html"
         json_path.write_text(json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8")
-        write_diff_html(diff, html_path)
+        write_diff_html(diff, html_path, path_index)
         rel = self.create_release(
             tag,
             f"Compare {old_version} → {new_version}",

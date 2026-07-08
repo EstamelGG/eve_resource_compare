@@ -51,7 +51,7 @@ def parse_index_text(text: str) -> Iterator[IndexEntry]:
 
 
 def entry_to_dict(entry: IndexEntry) -> dict:
-    return {"hash": entry.hash, "size": entry.size}
+    return {"hash": entry.hash, "size": entry.size, "storage": entry.storage}
 
 
 def build_index_map(entries: Iterator[IndexEntry], prefix: str | None = None) -> dict[str, dict]:

@@ -5,6 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .cdn_url import merge_path_index
 from .compare import compare_indices
 from .indices_fetcher import fetch_version_indices
 from .release import GitHubReleases
@@ -132,7 +133,13 @@ def main() -> int:
     )
 
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="eve-compare-"))
-    gh.publish_compare(old_version, new_version, diff, workdir)
+    path_index = merge_path_index(
+        old_indices.app_index,
+        old_indices.res_index,
+        new_indices.app_index,
+        new_indices.res_index,
+    )
+    gh.publish_compare(old_version, new_version, diff, workdir, path_index)
     print(f"Published compare-{old_version}-{new_version} (diff.json + diff.html)")
     return 0
 

@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from eve_resource_compare.cdn_url import merge_path_index
 from eve_resource_compare.compare import compare_indices
 from eve_resource_compare.html_report import write_diff_html
 from eve_resource_compare.indices_fetcher import fetch_version_indices
@@ -87,7 +88,10 @@ def main() -> int:
     diff_path = OUT_DIR / f"diff-{OLD_VERSION}-{new_version}.json"
     diff_path.write_text(json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8")
     html_path = OUT_DIR / f"diff-{OLD_VERSION}-{new_version}.html"
-    write_diff_html(diff, html_path)
+    path_index = merge_path_index(
+        old_idx.app_index, old_idx.res_index, new_idx.app_index, new_idx.res_index
+    )
+    write_diff_html(diff, html_path, path_index)
     print(f"Wrote {diff_path} and {html_path} ({time.time()-t:.1f}s)")
 
     s = diff["summary"]
