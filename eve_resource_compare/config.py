@@ -15,7 +15,7 @@ MANIFEST_FALLBACK_VERSIONS = (
 
 RESFILEINDEX_NAMES = (
     "app:/resfileindex.txt",
-    "app:/resfileindex_Windows.txt",
+    "app:/resfileindex_windows.txt",
     "app:/resfileindex_prefetch.txt",
 )
 DEPS_MANIFEST_PATH = "app:/resfiledependencies.yaml"

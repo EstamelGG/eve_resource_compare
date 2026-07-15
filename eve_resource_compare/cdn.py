@@ -109,6 +109,29 @@ def fetch_stream_to_buffer(url: str, timeout: int = CDN_LARGE_TIMEOUT) -> io.Byt
     return _retry_call(_do, url)
 
 
+def download_to_file(url: str, dest: os.PathLike[str] | str, timeout: int = CDN_LARGE_TIMEOUT) -> int:
+    """Stream URL to disk; returns written byte count."""
+    path = os.fspath(dest)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.part"
+
+    def _do() -> int:
+        written = 0
+        with open(tmp, "wb") as f:
+            for chunk in fetch_stream(url, timeout=timeout):
+                f.write(chunk)
+                written += len(chunk)
+        os.replace(tmp, path)
+        return written
+
+    try:
+        return _retry_call(_do, url)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def head_ok(url: str, timeout: int = 30) -> bool:
     def _do() -> bool:
         resp = _SESSION.head(url, timeout=timeout, allow_redirects=True)
