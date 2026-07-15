@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,8 +31,9 @@ from .indices_fetcher import fetch_manifest, storage_url
 class DownloadJob:
     url: str
     dest: Path
-    # Client cache stores uncompressed size; CDN blob may be compressed_size.
+    # Client cache stores uncompressed size; CDN may serve either size.
     expected_sizes: frozenset[int]
+    expected_hash: str  # lowercase md5 hex of on-disk content
     label: str
 
 
@@ -50,12 +53,26 @@ def _entry_sizes(entry: IndexEntry) -> frozenset[int]:
     return frozenset(s for s in (entry.size, entry.compressed_size) if s > 0)
 
 
-def _should_skip(dest: Path, expected_sizes: frozenset[int]) -> bool:
+def _file_md5(path: Path) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _should_skip(dest: Path, expected_sizes: frozenset[int], expected_hash: str) -> bool:
+    """Size gate first; MD5 only when size matches."""
     if not dest.is_file():
         return False
-    if not expected_sizes:
+    if expected_sizes and dest.stat().st_size not in expected_sizes:
+        return False
+    if not expected_hash:
         return True
-    return dest.stat().st_size in expected_sizes
+    return _file_md5(dest) == expected_hash
 
 
 def collect_binary_jobs(outdir: Path, entries: dict[str, IndexEntry]) -> list[DownloadJob]:
@@ -71,6 +88,7 @@ def collect_binary_jobs(outdir: Path, entries: dict[str, IndexEntry]) -> list[Do
                 url=storage_url(entry.storage),
                 dest=dest,
                 expected_sizes=_entry_sizes(entry),
+                expected_hash=entry.hash,
                 label=entry.display_path,
             )
         )
@@ -94,10 +112,45 @@ def collect_res_jobs(outdir: Path, index_texts: list[str]) -> list[DownloadJob]:
                     url=_resource_url(entry.storage),
                     dest=dest,
                     expected_sizes=_entry_sizes(entry),
+                    expected_hash=entry.hash,
                     label=entry.display_path,
                 )
             )
     return jobs
+
+
+def _partition_jobs(
+    jobs: list[DownloadJob],
+    *,
+    skip_existing: bool,
+    workers: int,
+) -> tuple[list[DownloadJob], int]:
+    """Return (need_download, skip_count)."""
+    if not skip_existing:
+        return jobs, 0
+
+    total = len(jobs)
+    print(f"Verifying {total} files (size gate + md5) with {workers} workers...")
+    need: list[DownloadJob] = []
+    skip = 0
+    done = 0
+
+    def _check(job: DownloadJob) -> tuple[DownloadJob, bool]:
+        return job, _should_skip(job.dest, job.expected_sizes, job.expected_hash)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_check, job) for job in jobs]
+        for fut in as_completed(futures):
+            job, skipped = fut.result()
+            done += 1
+            if skipped:
+                skip += 1
+            else:
+                need.append(job)
+            if done % 2000 == 0 or done == total:
+                print(f"  verify [{done}/{total}] skip={skip} need={len(need)}")
+
+    return need, skip
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -152,11 +205,8 @@ async def _download_one(
     session: aiohttp.ClientSession,
     sem: asyncio.Semaphore,
     job: DownloadJob,
-    skip_existing: bool,
 ) -> tuple[str, str]:
-    """Returns (status, detail) status in {ok, skip, fail}."""
-    if skip_existing and _should_skip(job.dest, job.expected_sizes):
-        return "skip", job.label
+    """Returns (status, detail) status in {ok, fail}."""
     async with sem:
         try:
             await _aio_download_to_file(session, job.url, job.dest)
@@ -165,8 +215,8 @@ async def _download_one(
             return "fail", f"{job.label}: {e}"
 
 
-async def _run_jobs(jobs: list[DownloadJob], workers: int, skip_existing: bool) -> tuple[int, int, int]:
-    ok = skip = fail = 0
+async def _run_jobs(jobs: list[DownloadJob], workers: int) -> tuple[int, int]:
+    ok = fail = 0
     done = 0
     total = len(jobs)
     sem = asyncio.Semaphore(workers)
@@ -180,7 +230,7 @@ async def _run_jobs(jobs: list[DownloadJob], workers: int, skip_existing: bool) 
         trust_env=True,
     ) as session:
         tasks = [
-            asyncio.create_task(_download_one(session, sem, job, skip_existing))
+            asyncio.create_task(_download_one(session, sem, job))
             for job in jobs
         ]
         for fut in asyncio.as_completed(tasks):
@@ -188,15 +238,13 @@ async def _run_jobs(jobs: list[DownloadJob], workers: int, skip_existing: bool) 
             done += 1
             if status == "ok":
                 ok += 1
-            elif status == "skip":
-                skip += 1
             else:
                 fail += 1
                 print(f"FAIL {detail}")
             if done % 50 == 0 or done == total:
-                print(f"[{done}/{total}] ok={ok} skip={skip} fail={fail}")
+                print(f"[{done}/{total}] ok={ok} fail={fail}")
 
-    return ok, skip, fail
+    return ok, fail
 
 
 def run_download(
@@ -232,7 +280,7 @@ def run_download(
                 continue
             rel = _app_rel_path(entry.display_path)
             dest = tq / Path(*rel.split("/"))
-            if not _should_skip(dest, _entry_sizes(entry)):
+            if not _should_skip(dest, _entry_sizes(entry), entry.hash):
                 print(f"Fetching index {entry.display_path}...")
                 download_to_file(storage_url(entry.storage), dest)
             print(f"Parsing {dest.name}...")
@@ -246,8 +294,13 @@ def run_download(
         print("Nothing to download")
         return 0
 
-    print(f"Downloading {len(jobs)} files with {workers} aiohttp workers...")
-    ok, skip, fail = asyncio.run(_run_jobs(jobs, workers, skip_existing))
+    need, skip = _partition_jobs(jobs, skip_existing=skip_existing, workers=workers)
+    if not need:
+        print(f"Done: ok=0 skip={skip} fail=0 → {outdir}")
+        return 0
+
+    print(f"Downloading {len(need)} files with {workers} aiohttp workers (skipped {skip})...")
+    ok, fail = asyncio.run(_run_jobs(need, workers))
     print(f"Done: ok={ok} skip={skip} fail={fail} → {outdir}")
     return 1 if fail else 0
 
@@ -258,11 +311,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--build", "-b", type=int, required=True, help="Client buildNumber")
     p.add_argument("--out", "-o", type=Path, required=True, help="Output SharedCache root")
-    p.add_argument("--workers", "-j", type=int, default=8, help="Parallel downloads")
+    p.add_argument("--workers", "-j", type=int, default=8, help="Parallel downloads / verify")
     p.add_argument(
         "--no-skip-existing",
         action="store_true",
-        help="Re-download even if dest file exists with matching size",
+        help="Re-download even if dest file exists with matching size+md5",
     )
     p.add_argument("--binaries-only", action="store_true", help="Only download app:/ files")
     p.add_argument("--resources-only", action="store_true", help="Only download res:/ files")
