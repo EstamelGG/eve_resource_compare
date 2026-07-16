@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import hashlib
 import os
+import stat
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -153,6 +154,17 @@ def _partition_jobs(
     return need, skip
 
 
+def _ensure_writable(path: Path) -> None:
+    """Clear read-only so os.replace can overwrite client-marked files."""
+    try:
+        if path.is_file():
+            mode = path.stat().st_mode
+            if not (mode & stat.S_IWRITE):
+                path.chmod(mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
 def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
         return True
@@ -182,6 +194,7 @@ async def _aio_download_to_file(
                     async for chunk in resp.content.iter_chunked(65536):
                         f.write(chunk)
                         written += len(chunk)
+            _ensure_writable(dest)
             os.replace(tmp, dest)
             return written
         except CdnError:
@@ -206,17 +219,17 @@ async def _download_one(
     sem: asyncio.Semaphore,
     job: DownloadJob,
 ) -> tuple[str, str]:
-    """Returns (status, detail) status in {ok, fail}."""
+    """Returns (status, detail) status in {ok, skip}. Failures are soft-skipped."""
     async with sem:
         try:
             await _aio_download_to_file(session, job.url, job.dest)
             return "ok", job.label
         except Exception as e:
-            return "fail", f"{job.label}: {e}"
+            return "skip", f"{job.label}: {e}"
 
 
 async def _run_jobs(jobs: list[DownloadJob], workers: int) -> tuple[int, int]:
-    ok = fail = 0
+    ok = soft_skip = 0
     done = 0
     total = len(jobs)
     sem = asyncio.Semaphore(workers)
@@ -239,12 +252,12 @@ async def _run_jobs(jobs: list[DownloadJob], workers: int) -> tuple[int, int]:
             if status == "ok":
                 ok += 1
             else:
-                fail += 1
-                print(f"FAIL {detail}")
+                soft_skip += 1
+                print(f"SKIP {detail}")
             if done % 50 == 0 or done == total:
-                print(f"[{done}/{total}] ok={ok} fail={fail}")
+                print(f"[{done}/{total}] ok={ok} soft_skip={soft_skip}")
 
-    return ok, fail
+    return ok, soft_skip
 
 
 def run_download(
@@ -262,8 +275,10 @@ def run_download(
     (outdir / "ResFiles").mkdir(exist_ok=True)
 
     print(f"Manifest: eveonline_{build}.txt → {outdir}")
-    _, entries = fetch_manifest(build)
-    print(f"Manifest entries: {len(entries)}")
+    manifest_text, entries = fetch_manifest(build)
+    index_path = outdir / "index_tranquility.txt"
+    index_path.write_text(manifest_text, encoding="utf-8")
+    print(f"Wrote {index_path.name} ({len(entries)} entries)")
 
     jobs: list[DownloadJob] = []
     if not resources_only:
@@ -300,9 +315,10 @@ def run_download(
         return 0
 
     print(f"Downloading {len(need)} files with {workers} aiohttp workers (skipped {skip})...")
-    ok, fail = asyncio.run(_run_jobs(need, workers))
-    print(f"Done: ok={ok} skip={skip} fail={fail} → {outdir}")
-    return 1 if fail else 0
+    ok, soft_skip = asyncio.run(_run_jobs(need, workers))
+    skip += soft_skip
+    print(f"Done: ok={ok} skip={skip} soft_skip={soft_skip} → {outdir}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
