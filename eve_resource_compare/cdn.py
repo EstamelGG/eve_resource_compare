@@ -39,6 +39,7 @@ def _session() -> requests.Session:
 
 
 _SESSION = _session()
+_REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -70,8 +71,14 @@ def _retry_call(fn: Callable[[], T], label: str) -> T:
 
 def fetch_bytes(url: str, timeout: int = CDN_TIMEOUT) -> bytes:
     def _do() -> bytes:
-        resp = _SESSION.get(url, timeout=timeout)
+        resp = _SESSION.get(url, timeout=timeout, headers=_REQUEST_HEADERS.copy())
         if resp.status_code == 403:
+            print("CDN 403 for URL:", url)
+            print("Response headers:", dict(resp.headers))
+            try:
+                print("Request headers sent:", dict(resp.request.headers))
+            except Exception:
+                pass
             raise CdnError(f"403 Forbidden (missing User-Agent?): {url}")
         resp.raise_for_status()
         return resp.content
@@ -85,7 +92,7 @@ def fetch_text(url: str, timeout: int = CDN_TIMEOUT) -> str:
 
 def fetch_stream(url: str, timeout: int = CDN_LARGE_TIMEOUT) -> Iterator[bytes]:
     def _open() -> requests.Response:
-        resp = _SESSION.get(url, timeout=timeout, stream=True)
+        resp = _SESSION.get(url, timeout=timeout, stream=True, headers=_REQUEST_HEADERS.copy())
         resp.raise_for_status()
         return resp
 
@@ -134,7 +141,12 @@ def download_to_file(url: str, dest: os.PathLike[str] | str, timeout: int = CDN_
 
 def head_ok(url: str, timeout: int = 30) -> bool:
     def _do() -> bool:
-        resp = _SESSION.head(url, timeout=timeout, allow_redirects=True)
+        resp = _SESSION.head(
+            url,
+            timeout=timeout,
+            allow_redirects=True,
+            headers=_REQUEST_HEADERS.copy(),
+        )
         return resp.status_code == 200
 
     try:
