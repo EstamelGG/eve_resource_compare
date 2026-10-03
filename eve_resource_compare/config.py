@@ -1,4 +1,10 @@
-USER_AGENT = "eve-resource-compare/0.1.0 (github-actions)"
+import os
+
+USER_AGENT = os.environ.get(
+    "EVE_RESOURCE_COMPARE_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+)
 
 ESI_STATUS_URL = "https://esi.evetech.net/latest/status/?datasource=tranquility"
 SDE_LATEST_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
